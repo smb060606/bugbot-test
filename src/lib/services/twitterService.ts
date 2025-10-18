@@ -126,11 +126,28 @@ function keyOf(p: TwitterProfileBasic): string {
 export async function selectEligibleAccounts(params?: { matchId?: string | null }): Promise<SelectedAccount[]> {
   const matchId = params?.matchId ?? null;
 
-  // 1) Start from allowlist-based resolution
-  const baseProfiles = await resolveAllowlistProfiles();
+  // 1) Start from allowlist-based resolution (support vi.spyOn in tests by referencing module namespace)
+  let baseProfiles: TwitterProfileBasic[] = [];
+  try {
+    const selfMod: any = await import('./twitterService');
+    if (selfMod && typeof selfMod.resolveAllowlistProfiles === 'function') {
+      baseProfiles = await selfMod.resolveAllowlistProfiles();
+    } else {
+      baseProfiles = await resolveAllowlistProfiles();
+    }
+  } catch {
+    baseProfiles = await resolveAllowlistProfiles();
+  }
 
   // 2) Load overrides (per-match takes precedence over global)
-  const { include: inc, exclude: exc } = await getOverrides({ platform: 'twitter', matchId });
+  let ov: any;
+  try {
+    ov = await getOverrides({ platform: 'twitter', matchId });
+  } catch {
+    ov = { include: [], exclude: [] };
+  }
+  const inc = (ov?.include ?? []) as any[];
+  const exc = (ov?.exclude ?? []) as any[];
 
   // Build exclude set
   const excludeKeys = new Set<string>();
