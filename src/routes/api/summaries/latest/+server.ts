@@ -165,7 +165,7 @@ export const GET: RequestHandler = async ({ url }) => {
           phase,
           window_minutes: sinceMin,
           posts_count: texts.length,
-          chars_count: (texts.join('\n')).slice(0, MAX_CHARS_ENV).length,
+          chars_count: joined.length,
           model: env('OPENAI_MODEL', 'gpt-5'),
           prompt_tokens: extra?.usage?.prompt_tokens ?? null,
           completion_tokens: extra?.usage?.completion_tokens ?? null,
@@ -208,6 +208,32 @@ export const GET: RequestHandler = async ({ url }) => {
 
     // Truncate by total chars to keep prompt bounded
     let joined = texts.join('\n');
+
+    // Budget-aware trimming (approximate tokens to chars)
+    // Configure via:
+    // - SUMMARIES_MODEL_MAX_TOKENS (e.g., 8192 for many models)
+    // - SUMMARIES_TARGET_MAX_TOKENS (fallback total budget if model max unknown)
+    // - SUMMARIES_RESPONSE_TOKENS (reserve for completion; default 600)
+    // - SUMMARIES_CHARS_PER_TOKEN (approx; default 4)
+    {
+      const MODEL_MAX_TOKENS = Number(process.env.SUMMARIES_MODEL_MAX_TOKENS ?? 0);
+      const TARGET_MAX_TOKENS = Number(process.env.SUMMARIES_TARGET_MAX_TOKENS ?? 0);
+      const RESPONSE_TOKENS = Number(process.env.SUMMARIES_RESPONSE_TOKENS ?? 600);
+      const CHARS_PER_TOKEN = Number(process.env.SUMMARIES_CHARS_PER_TOKEN ?? 4);
+
+      let availableTokens = 0;
+      if (MODEL_MAX_TOKENS > 0) {
+        availableTokens = Math.max(0, MODEL_MAX_TOKENS - RESPONSE_TOKENS);
+      } else if (TARGET_MAX_TOKENS > 0) {
+        availableTokens = Math.max(0, TARGET_MAX_TOKENS - RESPONSE_TOKENS);
+      }
+      if (availableTokens > 0) {
+        const budgetCharLimit = Math.max(0, Math.floor(availableTokens * CHARS_PER_TOKEN));
+        if (joined.length > budgetCharLimit) {
+          joined = joined.slice(0, budgetCharLimit);
+        }
+      }
+    }
 
     // Rate limiting (global, in-memory)
     const now = Date.now();

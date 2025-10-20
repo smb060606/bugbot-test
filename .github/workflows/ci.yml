@@ -9,30 +9,41 @@ on:
       - chore/**
   pull_request:
     branches:
-      - "**"
+      - main
 
 jobs:
-  test:
-    name: Install and Test
+  test-and-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        node-version: [20.x]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Use Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+        env:
+          CI: true
 
-      - name: Run Vitest
-        run: npx vitest run --reporter=verbose
+      - name: Run unit tests
+        run: npm run test:run
+        env:
+          CI: true
+          # Provide minimal envs so tests that rely on server-only env don't crash
+          SUPABASE_URL: http://localhost
+          SUPABASE_SERVICE_ROLE_KEY: stub
+          OPENAI_API_KEY: stub
 
-      # Optional: run the simple test runner as a smoke check
-      - name: Run simple test suite
-        run: npm test
+      - name: Build (SvelteKit)
+        run: npm run build
+        env:
+          CI: true
