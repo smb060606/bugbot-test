@@ -1,5 +1,6 @@
 import type { RequestHandler } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
+/* In tests, SvelteKit $env modules are not available; read from process.env */
+const envVar = (name: string) => process.env[name];
 import { BUDGET_PER_PLATFORM_DOLLARS, getPlatformCostConfig, estimateMaxAccounts } from '$lib/config/budget';
 import { getAccountsSnapshot } from '$lib/services/bskyService';
 import { BSKY_MAX_ACCOUNTS } from '$lib/config/bsky';
@@ -49,7 +50,7 @@ type PlatformPlan = {
 export const GET: RequestHandler = async ({ request }) => {
   try {
     // Admin-only guard: require ADMIN_SECRET via header
-    const adminSecret = env.ADMIN_SECRET;
+    const adminSecret = envVar('ADMIN_SECRET');
     if (!adminSecret) {
       return new Response(JSON.stringify({ error: 'admin_not_configured' }), {
         status: 501,

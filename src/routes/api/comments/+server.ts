@@ -7,6 +7,36 @@ const ALLOWED_PLATFORMS: Platform[] = ['bsky', 'twitter', 'threads', 'combined']
 
 // In-memory fallback store when Supabase is not configured
 const COMMENTS_MEM = new Map<string, Comment[]>(); // key = matchId
+const COMMENTS_TTL = new Map<string, number>(); // key = matchId, value = expiry timestamp
+const MAX_COMMENTS_PER_MATCH = 1000; // Maximum comments per match to prevent memory bloat
+const COMMENTS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days TTL for fallback storage
+
+// Cleanup expired entries
+function cleanupExpiredComments() {
+  const now = Date.now();
+  for (const [matchId, expiry] of COMMENTS_TTL.entries()) {
+    if (now > expiry) {
+      COMMENTS_MEM.delete(matchId);
+      COMMENTS_TTL.delete(matchId);
+    }
+  }
+}
+
+// Add comment with TTL and size limits
+function addCommentToMemory(matchId: string, comment: Comment) {
+  cleanupExpiredComments();
+  
+  let comments = COMMENTS_MEM.get(matchId) || [];
+  
+  // Enforce size limit
+  if (comments.length >= MAX_COMMENTS_PER_MATCH) {
+    comments = comments.slice(-MAX_COMMENTS_PER_MATCH + 1); // Keep most recent
+  }
+  
+  comments.unshift(comment);
+  COMMENTS_MEM.set(matchId, comments);
+  COMMENTS_TTL.set(matchId, Date.now() + COMMENTS_TTL_MS);
+}
 
 function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -141,9 +171,7 @@ export const POST: RequestHandler = async ({ request }) => {
           createdAt: new Date().toISOString(),
           status: 'active'
         };
-        const arr = COMMENTS_MEM.get(matchId) ?? [];
-        arr.unshift(comment);
-        COMMENTS_MEM.set(matchId, arr);
+        addCommentToMemory(matchId, comment);
 
         return new Response(JSON.stringify({ ok: true, comment, note: 'supabase_insert_failed_fallback' }), {
           status: 201,
@@ -169,9 +197,7 @@ export const POST: RequestHandler = async ({ request }) => {
         status: 'active'
       };
 
-      const arr = COMMENTS_MEM.get(matchId) ?? [];
-      arr.unshift(comment);
-      COMMENTS_MEM.set(matchId, arr);
+      addCommentToMemory(matchId, comment);
 
       return new Response(JSON.stringify({ ok: true, comment }), {
         status: 201,

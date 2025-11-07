@@ -59,6 +59,10 @@ async function notifySlack(text: string) {
 const MAX_POSTS = 150;
 const MAX_CHARS = 12000;
 
+// Budget caps (override via env)
+const MAX_POSTS_ENV = Number(process.env.SUMMARIES_MAX_POSTS ?? MAX_POSTS);
+const MAX_CHARS_ENV = Number(process.env.SUMMARIES_MAX_CHARS ?? MAX_CHARS);
+
 // Supported platforms for now; "combined" currently aliases to bsky until X/Threads are wired
 type Platform = 'bsky' | 'twitter' | 'threads' | 'combined';
 type Phase = 'pre' | 'live' | 'post';
@@ -143,17 +147,59 @@ export const GET: RequestHandler = async ({ url }) => {
     let texts: string[] = [];
     let accountsUsed: Array<{ did: string; handle: string; displayName?: string }> = [];
 
+    // Start wall-clock timer for audit
+    const started = Date.now();
+
+    // Prepare audit insert helper (Supabase admin)
+    async function audit(
+      status: 'ok' | 'rate_limited' | 'missing_key' | 'timeout' | 'failed',
+      extra?: { error?: string; usage?: any }
+    ) {
+      try {
+        const url = process.env.SUPABASE_URL || process.env.PUBLIC_SUPABASE_URL;
+        const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        if (!url || !serviceKey) return;
+        const body = {
+          match_id: matchId,
+          platform,
+          phase,
+          window_minutes: sinceMin,
+          posts_count: texts.length,
+          chars_count: joined.length,
+          model: env('OPENAI_MODEL', 'gpt-5'),
+          prompt_tokens: extra?.usage?.prompt_tokens ?? null,
+          completion_tokens: extra?.usage?.completion_tokens ?? null,
+          total_tokens: extra?.usage?.total_tokens ?? null,
+          status,
+          error_message: extra?.error ?? null,
+          duration_ms: Date.now() - started
+        };
+        await fetch(`${url}/rest/v1/summary_requests`, {
+          method: 'POST',
+          headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+          },
+          body: JSON.stringify(body)
+        });
+      } catch {
+        // Do not fail request due to audit failures
+      }
+    }
+
     if (platform === 'bsky' || platform === 'combined') {
-      const accounts = await selectEligibleAccounts();
-      accountsUsed = accounts.map((a) => ({
+      const accounts = (await selectEligibleAccounts()) ?? [];
+      accountsUsed = (accounts ?? []).map((a) => ({
         did: a.profile.did,
         handle: a.profile.handle,
         displayName: a.profile.displayName
       }));
-      const posts = await fetchRecentPostsForAccounts(accounts, sinceMin);
+      const posts = (await fetchRecentPostsForAccounts(accounts, sinceMin)) ?? [];
       texts = posts
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-        .slice(0, MAX_POSTS)
+        .slice(0, MAX_POSTS_ENV)
         .map((p) => `[${new Date(p.createdAt).toISOString()}] @${p.author.handle}: ${p.text}`);
     } else {
       // Placeholder: not yet wired
@@ -163,13 +209,42 @@ export const GET: RequestHandler = async ({ url }) => {
     // Truncate by total chars to keep prompt bounded
     let joined = texts.join('\n');
 
+    // Budget-aware trimming (approximate tokens to chars)
+    // Configure via:
+    // - SUMMARIES_MODEL_MAX_TOKENS (e.g., 8192 for many models)
+    // - SUMMARIES_TARGET_MAX_TOKENS (fallback total budget if model max unknown)
+    // - SUMMARIES_RESPONSE_TOKENS (reserve for completion; default 600)
+    // - SUMMARIES_CHARS_PER_TOKEN (approx; default 4)
+    {
+      const MODEL_MAX_TOKENS = Number(process.env.SUMMARIES_MODEL_MAX_TOKENS ?? 0);
+      const TARGET_MAX_TOKENS = Number(process.env.SUMMARIES_TARGET_MAX_TOKENS ?? 0);
+      const RESPONSE_TOKENS = Number(process.env.SUMMARIES_RESPONSE_TOKENS ?? 600);
+      const CHARS_PER_TOKEN = Number(process.env.SUMMARIES_CHARS_PER_TOKEN ?? 4);
+
+      let availableTokens = 0;
+      if (MODEL_MAX_TOKENS > 0) {
+        availableTokens = Math.max(0, MODEL_MAX_TOKENS - RESPONSE_TOKENS);
+      } else if (TARGET_MAX_TOKENS > 0) {
+        availableTokens = Math.max(0, TARGET_MAX_TOKENS - RESPONSE_TOKENS);
+      }
+      if (availableTokens > 0) {
+        const budgetCharLimit = Math.max(0, Math.floor(availableTokens * CHARS_PER_TOKEN));
+        if (joined.length > budgetCharLimit) {
+          joined = joined.slice(0, budgetCharLimit);
+        }
+      }
+    }
+
     // Rate limiting (global, in-memory)
     const now = Date.now();
     SUMMARY_REQ_TIMESTAMPS = SUMMARY_REQ_TIMESTAMPS.filter((ts) => now - ts < RATE_WINDOW_MS);
     if (SUMMARY_REQ_TIMESTAMPS.length >= RATE_MAX) {
       const retryAfterMs = RATE_WINDOW_MS - (now - SUMMARY_REQ_TIMESTAMPS[0]);
       // Notice ops via Slack MCP (optional)
-      await notifySlack(`[summaries/latest] rate_limited: retry in ${Math.ceil(retryAfterMs / 1000)}s`);
+      await notifySlack(
+        `[summaries/latest] rate_limited: retry in ${Math.ceil(retryAfterMs / 1000)}s`
+      );
+      await audit('rate_limited');
       return new Response(JSON.stringify({ error: 'rate_limited', retryAfterMs }), {
         status: 429,
         headers: {
@@ -179,8 +254,8 @@ export const GET: RequestHandler = async ({ url }) => {
       });
     }
     SUMMARY_REQ_TIMESTAMPS.push(now);
-    if (joined.length > MAX_CHARS) {
-      joined = joined.slice(0, MAX_CHARS);
+    if (joined.length > MAX_CHARS_ENV) {
+      joined = joined.slice(0, MAX_CHARS_ENV);
     }
 
     const OPENAI_API_KEY = env('OPENAI_API_KEY');
@@ -189,6 +264,7 @@ export const GET: RequestHandler = async ({ url }) => {
     if (!OPENAI_API_KEY) {
       // Notice ops (no API key)
       await notifySlack('[summaries/latest] missing OPENAI_API_KEY');
+      await audit('missing_key');
       return new Response(
         JSON.stringify({
           error: 'missing_api_key',
@@ -243,6 +319,7 @@ export const GET: RequestHandler = async ({ url }) => {
       if (err?.name === 'AbortError' || err?.message === 'timeout') {
         // Notice ops on timeouts
         await notifySlack(`[summaries/latest] openai_timeout after ${timeoutMs}ms`);
+        await audit('timeout');
         return new Response(JSON.stringify({ error: 'openai_timeout', timeoutMs }), {
           status: 504,
           headers: { 'Content-Type': 'application/json' }
@@ -262,12 +339,16 @@ export const GET: RequestHandler = async ({ url }) => {
       phase,
       windowMinutes: sinceMin,
       accountsUsed,
-      liveBin: phase === 'live' && liveBin ? { index: liveBin.index, startMinute: liveBin.startMinute, endMinute: liveBin.endMinute } : null,
+      liveBin:
+        phase === 'live' && liveBin
+          ? { index: liveBin.index, startMinute: liveBin.startMinute, endMinute: liveBin.endMinute }
+          : null,
       model: OPENAI_MODEL,
       summary: content,
       usage
     };
 
+    await audit('ok', { usage });
     return new Response(JSON.stringify(response), {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
     });
@@ -277,6 +358,37 @@ export const GET: RequestHandler = async ({ url }) => {
       console.error('[summaries/latest] failed', { message: e?.message, stack: e?.stack });
     } catch {}
     await notifySlack(`[summaries/latest] summary_failed: ${e?.message ?? 'Unknown error'}`);
+    try {
+      const supaUrl = process.env.SUPABASE_URL || process.env.PUBLIC_SUPABASE_URL;
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (supaUrl && serviceKey) {
+        const body = {
+          match_id: 'unknown',
+          platform: 'combined',
+          phase: 'live',
+          window_minutes: 0,
+          posts_count: 0,
+          chars_count: 0,
+          model: env('OPENAI_MODEL', 'gpt-5'),
+          prompt_tokens: null,
+          completion_tokens: null,
+          total_tokens: null,
+          status: 'failed' as const,
+          error_message: e?.message ?? 'Unknown error',
+          duration_ms: null as any
+        };
+        await fetch(`${supaUrl}/rest/v1/summary_requests`, {
+          method: 'POST',
+          headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal'
+          },
+          body: JSON.stringify(body)
+        });
+      }
+    } catch {}
     return new Response(JSON.stringify({ error: 'summary_failed', message: e?.message ?? 'Unknown error' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
