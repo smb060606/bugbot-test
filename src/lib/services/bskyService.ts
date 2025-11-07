@@ -384,7 +384,13 @@ export function summarizeSentiment(posts: SimplePost[]) {
     else neuCount++;
   }
 
-  const total = posts.length || 1;
+  const total = posts.length;
+  if (total === 0) {
+    return {
+      ratios: { pos: 0, neg: 0, neu: 0 },
+      counts: { total: 0, pos: 0, neg: 0, neu: 0 }
+    };
+  }
   const pos = posCount / total;
   const neg = negCount / total;
   const neu = neuCount / total;

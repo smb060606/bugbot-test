@@ -50,13 +50,59 @@ export const DEFAULT_RECENCY_MINUTES = TWITTER_DEFAULT_RECENCY_MINUTES;
  * @returns An array of profiles where each entry has `handle` and `displayName` set to the handle, `followersCount` and `postsCount` left undefined, and `createdAt` set to `null`
  */
 export async function resolveAllowlistProfiles(handles: string[] = TWITTER_ALLOWLIST): Promise<TwitterProfileBasic[]> {
-  return handles.map((h) => ({
-    handle: h,
-    displayName: h,
-    followersCount: undefined,
-    postsCount: undefined,
-    createdAt: null
-  }));
+  const bearer = process.env.TWITTER_BEARER_TOKEN;
+  // If no bearer token configured, fall back to minimal profiles
+  if (!bearer) {
+    return handles.map((h) => ({
+      handle: h,
+      displayName: h,
+      followersCount: undefined,
+      postsCount: undefined,
+      createdAt: null
+    }));
+  }
+
+  // With bearer token, try to resolve basic profile info; gracefully fall back per-handle on errors
+  const resolved: TwitterProfileBasic[] = [];
+  for (const handle of handles) {
+    try {
+      const url = `https://api.twitter.com/2/users/by/username/${encodeURIComponent(handle)}?user.fields=created_at,public_metrics,name,username`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${bearer}` }
+      });
+      if (!res.ok) throw new Error(`twitter_user_lookup_failed ${res.status}`);
+      const data: any = await res.json();
+      const u = data?.data;
+      if (u?.id) {
+        resolved.push({
+          user_id: String(u.id),
+          handle: u.username || handle,
+          displayName: u.name || handle,
+          followersCount: u.public_metrics?.followers_count ?? undefined,
+          postsCount: u.public_metrics?.tweet_count ?? undefined,
+          createdAt: u.created_at ?? null
+        });
+        continue;
+      }
+      // Fallback if response incomplete
+      resolved.push({
+        handle,
+        displayName: handle,
+        followersCount: undefined,
+        postsCount: undefined,
+        createdAt: null
+      });
+    } catch {
+      resolved.push({
+        handle,
+        displayName: handle,
+        followersCount: undefined,
+        postsCount: undefined,
+        createdAt: null
+      });
+    }
+  }
+  return resolved;
 }
 
 /**
@@ -126,11 +172,28 @@ function keyOf(p: TwitterProfileBasic): string {
 export async function selectEligibleAccounts(params?: { matchId?: string | null }): Promise<SelectedAccount[]> {
   const matchId = params?.matchId ?? null;
 
-  // 1) Start from allowlist-based resolution
-  const baseProfiles = await resolveAllowlistProfiles();
+  // 1) Start from allowlist-based resolution (support vi.spyOn in tests by referencing module namespace)
+  let baseProfiles: TwitterProfileBasic[] = [];
+  try {
+    const selfMod: any = await import('./twitterService');
+    if (selfMod && typeof selfMod.resolveAllowlistProfiles === 'function') {
+      baseProfiles = await selfMod.resolveAllowlistProfiles();
+    } else {
+      baseProfiles = await resolveAllowlistProfiles();
+    }
+  } catch {
+    baseProfiles = await resolveAllowlistProfiles();
+  }
 
   // 2) Load overrides (per-match takes precedence over global)
-  const { include: inc, exclude: exc } = await getOverrides({ platform: 'twitter', matchId });
+  let ov: any;
+  try {
+    ov = await getOverrides({ platform: 'twitter', matchId });
+  } catch {
+    ov = { include: [], exclude: [] };
+  }
+  const inc = (ov?.include ?? []) as any[];
+  const exc = (ov?.exclude ?? []) as any[];
 
   // Build exclude set
   const excludeKeys = new Set<string>();
@@ -206,7 +269,78 @@ export async function fetchRecentTweetsForAccounts(
   _accounts: SelectedAccount[],
   _sinceMinutes: number = DEFAULT_RECENCY_MINUTES
 ): Promise<SimpleTweet[]> {
-  return [];
+  const bearer = process.env.TWITTER_BEARER_TOKEN;
+  if (!_accounts?.length || !bearer) {
+    return [];
+  }
+
+  const startIso = new Date(Date.now() - Math.max(1, _sinceMinutes) * 60_000).toISOString();
+
+  // Helper to resolve user id if missing
+  async function ensureUserId(acc: SelectedAccount): Promise<{ user_id?: string; handle: string; displayName?: string }> {
+    const basic = {
+      user_id: acc.profile.user_id,
+      handle: acc.profile.handle,
+      displayName: acc.profile.displayName
+    };
+    if (basic.user_id) return basic;
+
+    try {
+      const url = `https://api.twitter.com/2/users/by/username/${encodeURIComponent(basic.handle)}?user.fields=name,username`;
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${bearer}` }
+      });
+      if (!res.ok) return basic;
+      const data: any = await res.json();
+      const u = data?.data;
+      if (u?.id) {
+        return {
+          user_id: String(u.id),
+          handle: u.username || basic.handle,
+          displayName: u.name || basic.displayName || basic.handle
+        };
+      }
+      return basic;
+    } catch {
+      return basic;
+    }
+  }
+
+  const tweets: SimpleTweet[] = [];
+  for (const acc of _accounts) {
+    try {
+      const auth = { Authorization: `Bearer ${bearer}` };
+      const user = await ensureUserId(acc);
+      if (!user.user_id) continue;
+
+      // Fetch recent tweets for this user since startIso
+      const url = new URL(`https://api.twitter.com/2/users/${encodeURIComponent(user.user_id)}/tweets`);
+      url.searchParams.set('max_results', '100');
+      url.searchParams.set('start_time', startIso);
+      url.searchParams.set('tweet.fields', 'created_at');
+
+      const res = await fetch(url.toString(), { headers: auth });
+      if (!res.ok) continue;
+      const data: any = await res.json();
+      const arr: any[] = Array.isArray(data?.data) ? data.data : [];
+      for (const t of arr) {
+        if (!t?.id || !t?.text || !t?.created_at) continue;
+        tweets.push({
+          id: String(t.id),
+          author: { user_id: user.user_id, handle: user.handle, displayName: user.displayName },
+          text: t.text,
+          createdAt: t.created_at
+        });
+      }
+    } catch {
+      // skip account on error
+      continue;
+    }
+  }
+
+  // Sort newest first
+  tweets.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  return tweets;
 }
 
 /**

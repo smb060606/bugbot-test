@@ -63,10 +63,14 @@ export const GET: RequestHandler = async ({ setHeaders, url, request }) => {
         sinceMin,
         mode: forceWindow ? `force:${forceWindow}` : 'dynamic'
       };
-      controller.enqueue(encoder.encode(`: stream start\n`));
-      // Suggest client reconnection delay (ms)
-      controller.enqueue(encoder.encode(`retry: ${Math.max(1000, intervalSec * 1000)}\n`));
-      controller.enqueue(encoder.encode(`event: meta\ndata: ${JSON.stringify(intro)}\n\n`));
+      // Batch initial frames into a single chunk so tests/readers observe them together
+      const init = `: stream start
+retry: ${Math.max(1000, intervalSec * 1000)}
+event: meta
+data: ${JSON.stringify(intro)}
+
+`;
+      controller.enqueue(encoder.encode(init));
 
       // Heartbeat comments to keep proxies/connections alive
       pinger = setInterval(() => {
