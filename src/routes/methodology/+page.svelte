@@ -42,11 +42,16 @@
 
   <div id="eligibility" class="card">
     <h2>Eligibility Rules</h2>
+    <p>To ensure data quality and representativeness, accounts must meet minimum thresholds:</p>
     <ul>
-      <li>Accounts must be established and active: minimum 500 followers and at least 36 months old.</li>
-      <li>Where platform APIs do not expose account creation date, we disclose the uncertainty and rely on followers/activity.</li>
-      <li>We prioritize more active accounts when selection caps apply.</li>
+      <li><strong>Follower count:</strong> Minimum 500 followers (configurable per platform)</li>
+      <li><strong>Account age:</strong> Minimum 6 months for Bluesky (36 months for Twitter/Threads when implemented)</li>
+      <li><strong>Activity:</strong> Accounts are prioritized by follower count when selection caps apply</li>
     </ul>
+    <p class="muted">
+      Note: Where platform APIs do not expose account creation date, we disclose the uncertainty and rely on followers/activity metrics.
+      Admin overrides can bypass eligibility requirements when needed for specific use cases.
+    </p>
   </div>
 
   <div id="overrides" class="card">
@@ -56,8 +61,18 @@
       Precedence (higher first): match EXCLUDE → match INCLUDE → global EXCLUDE → global INCLUDE.
       Overrides may bypass eligibility and can expire automatically.
     </p>
+    <h3>Account Selection Transparency</h3>
     <p>
-      Transparency: For public displays, we show a list of accounts used in each window. In live mode, Bluesky streams include the live accounts used.
+      For full transparency, we display the list of accounts used in each analysis window:
+    </p>
+    <ul>
+      <li><strong>Pre-match window:</strong> Accounts used are shown in snapshot views</li>
+      <li><strong>Live window:</strong> Accounts are displayed in real-time as data streams in</li>
+      <li><strong>Post-match window:</strong> Final account list is shown in snapshot views</li>
+      <li><strong>AI Summaries:</strong> Include metadata about which accounts contributed to the summary</li>
+    </ul>
+    <p>
+      All account lists show handles and display names (when available) so users can verify the sources of sentiment data.
     </p>
   </div>
 

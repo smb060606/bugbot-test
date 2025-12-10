@@ -102,9 +102,15 @@
 
           <div class="list">
             <h3>Accounts Used ({snapshot.platforms.bsky.accountsUsed.length})</h3>
+            <p class="muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem 0;">
+              These accounts contributed to the sentiment analysis for this {snapshot.window} window.
+              <a href="/methodology#overrides" style="color: #3b82f6; text-decoration: underline;">Learn more about account selection</a>.
+            </p>
             <div class="chips">
               {#each snapshot.platforms.bsky.accountsUsed as a}
-                <span class="chip">@{a.handle}{a.displayName ? ` (${a.displayName})` : ''}</span>
+                <span class="chip" title={a.did ? `DID: ${a.did}` : ''}>
+                  @{a.handle}{a.displayName ? ` (${a.displayName})` : ''}
+                </span>
               {/each}
             </div>
           </div>

@@ -91,12 +91,20 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
       qs.set('liveMin', String(data.liveMin));
       const res = await fetch(`/api/compare/${encodeURIComponent(matchId)}?${qs.toString()}`);
       if (!res.ok) {
-        const txt = await res.text().catch(() => '');
-        throw new Error(txt || `Request failed: ${res.status}`);
+        let errorMessage = `Failed to load snapshot (${res.status})`;
+        try {
+          const errorData = await res.json();
+          errorMessage = errorData.message || errorData.error || errorMessage;
+        } catch {
+          const txt = await res.text().catch(() => '');
+          if (txt) errorMessage = txt;
+        }
+        throw new Error(errorMessage);
       }
       snapshot = await res.json();
     } catch (e: any) {
-      snapError = e?.message || 'Snapshot failed';
+      snapError = e?.message || 'Failed to load snapshot. Please try again.';
+      console.error('Snapshot load error:', e);
     } finally {
       snapLoading = false;
     }
@@ -125,6 +133,7 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
     summaryLoading = true;
     summaryError = null;
     summaryText = null;
+    summaryMeta = null;
     try {
       const qs = new URLSearchParams({
         matchId,
@@ -135,8 +144,22 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
       });
       const res = await fetch(`/api/summaries/latest?${qs.toString()}`);
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.message || `Request failed: ${res.status}`);
+        let errorMessage = `Failed to load summary (${res.status})`;
+        try {
+          const err = await res.json();
+          if (err.error === 'rate_limited') {
+            errorMessage = `Rate limit reached. Please wait ${Math.ceil((err.retryAfterMs || 60000) / 1000)} seconds before trying again.`;
+          } else if (err.error === 'openai_timeout') {
+            errorMessage = 'Summary generation timed out. Please try again.';
+          } else if (err.error === 'missing_api_key') {
+            errorMessage = 'AI summary service is not configured.';
+          } else {
+            errorMessage = err.message || err.error || errorMessage;
+          }
+        } catch {
+          // Use default error message
+        }
+        throw new Error(errorMessage);
       }
       const payload = await res.json();
       summaryText = payload?.summary || '(No summary generated yet)';
@@ -146,7 +169,8 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
         liveBin: payload?.liveBin ?? null
       };
     } catch (e: any) {
-      summaryError = e?.message || 'Failed to load summary';
+      summaryError = e?.message || 'Failed to load summary. Please try again.';
+      console.error('Summary load error:', e);
     } finally {
       summaryLoading = false;
     }
@@ -162,9 +186,14 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
   .chips { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.35rem; }
   .chip { font-size: 0.75rem; padding: 0.15rem 0.45rem; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 999px; }
   .tabs { display: flex; gap: 0.5rem; }
-  .tab { padding: 0.35rem 0.7rem; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; cursor: pointer; }
+  .tab { padding: 0.35rem 0.7rem; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; cursor: pointer; transition: all 0.2s; }
   .tab.active { background: #eef2ff; border-color: #c7d2fe; }
+  .tab:hover:not(:disabled) { background: #f3f4f6; }
+  .tab:disabled { opacity: 0.6; cursor: not-allowed; }
   ul.msgs { max-height: 280px; overflow: auto; }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
 </style>
 
 <div class="container">
@@ -193,11 +222,17 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
       </ul>
 
       {#if accountsUsedLive.length}
-        <div style="margin-top:0.5rem;">
+        <div style="margin-top:0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
           <h3>Accounts Used (Live) ({accountsUsedLive.length})</h3>
+          <p class="muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem 0;">
+            These accounts are currently being monitored for live sentiment analysis.
+            <a href="/methodology#overrides" style="color: #3b82f6; text-decoration: underline;">Learn more</a>.
+          </p>
           <div class="chips">
             {#each accountsUsedLive as a}
-              <span class="chip">@{a.handle}{a.displayName ? ` (${a.displayName})` : ''}</span>
+              <span class="chip" title={a.did ? `DID: ${a.did}` : ''}>
+                @{a.handle}{a.displayName ? ` (${a.displayName})` : ''}
+              </span>
             {/each}
           </div>
         </div>
@@ -214,7 +249,9 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
         </button>
       </div>
       {#if snapError}
-        <div class="muted">Error: {snapError}</div>
+        <div class="error-message" style="padding: 0.75rem; background: #fee2e2; border: 1px solid #fecaca; border-radius: 6px; color: #991b1b; margin-top: 0.5rem;">
+          <strong>Error loading snapshot:</strong> {snapError}
+        </div>
       {:else if snapshot}
         <div class="muted">
           Generated: <span class="mono">{snapshot.generatedAt}</span> • Window: <strong>{snapshot.window.toUpperCase()}</strong>
@@ -254,11 +291,17 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
               {/if}
             </div>
 
-            <div style="margin-top:0.5rem;">
+            <div style="margin-top:0.5rem; padding-top: 0.5rem; border-top: 1px solid #e5e7eb;">
               <h3>Accounts Used ({snapshot.platforms.bsky.accountsUsed.length})</h3>
+              <p class="muted" style="font-size: 0.85rem; margin: 0.25rem 0 0.5rem 0;">
+                These accounts contributed to the sentiment analysis for this {active} window.
+                <a href="/methodology#overrides" style="color: #3b82f6; text-decoration: underline;">Learn more about account selection</a>.
+              </p>
               <div class="chips">
                 {#each snapshot.platforms.bsky.accountsUsed as a}
-                  <span class="chip">@{a.handle}{a.displayName ? ` (${a.displayName})` : ''}</span>
+                  <span class="chip" title={a.did ? `DID: ${a.did}` : ''}>
+                    @{a.handle}{a.displayName ? ` (${a.displayName})` : ''}
+                  </span>
                 {/each}
               </div>
             </div>
@@ -304,8 +347,15 @@ import { createSSEClient, type SSEClientController } from '$lib/utils/sseClient'
 
     {#if summaryOpen}
       <div class="rounded bg-gray-50 p-3 text-sm text-gray-800 whitespace-pre-line" style="margin-top:0.5rem;">
-        {#if summaryError}
-          <div class="text-red-600">Error: {summaryError}</div>
+        {#if summaryLoading}
+          <div class="text-gray-600" style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="display: inline-block; width: 16px; height: 16px; border: 2px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.6s linear infinite;"></span>
+            Generating summary...
+          </div>
+        {:else if summaryError}
+          <div class="error-message" style="padding: 0.75rem; background: #fee2e2; border: 1px solid #fecaca; border-radius: 6px; color: #991b1b;">
+            <strong>Error:</strong> {summaryError}
+          </div>
         {:else if summaryText}
           {summaryText}
         {:else}
