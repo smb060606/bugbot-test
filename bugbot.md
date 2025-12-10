@@ -23,3 +23,15 @@ if (!user) {
 ```
 
 This pattern should NOT be flagged as requiring the challenge to be cleared only after successful user creation.
+
+## File Exclusions
+
+### Database Migration Files
+
+**DO NOT** analyze or report bugs in database migration files.
+
+**Paths to exclude**:
+- `supabase/migrations/**/*.sql`
+- Any file matching the pattern `**/migrations/**/*.sql`
+
+**Rationale**: Database migration files are intentionally written in a specific format and are version-controlled as historical records. They should not be modified after being applied to production databases. Any issues with migrations should be addressed through new migration files, not by flagging the existing ones.
