@@ -35,3 +35,23 @@ This pattern should NOT be flagged as requiring the challenge to be cleared only
 - Any file matching the pattern `**/migrations/**/*.sql`
 
 **Rationale**: Database migration files are intentionally written in a specific format and are version-controlled as historical records. They should not be modified after being applied to production databases. Any issues with migrations should be addressed through new migration files, not by flagging the existing ones.
+
+## Code Style Enforcement
+
+### JavaScript Style Guide Compliance
+
+**DO** check for code style compliance with standard JavaScript style guidelines for `.js` files in the `src/` folder.
+
+**Scope**:
+- All `.js` files within `src/**/*.js`
+
+**Style guidelines to enforce**:
+- Consistent indentation (2 or 4 spaces, not tabs)
+- Semicolon usage (either always or never, consistently)
+- Quote style (single or double quotes, used consistently)
+- Proper function declaration formatting
+- Consistent spacing around operators and keywords
+- Proper use of ES6+ features where appropriate
+- Consistent naming conventions (camelCase for variables/functions, PascalCase for classes)
+
+**Rationale**: Maintaining consistent code style in JavaScript files improves readability, reduces cognitive load during code reviews, and helps prevent subtle bugs. The `src/` folder contains the core application logic and should adhere to professional coding standards.
