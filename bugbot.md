@@ -55,3 +55,19 @@ This pattern should NOT be flagged as requiring the challenge to be cleared only
 - Consistent naming conventions (camelCase for variables/functions, PascalCase for classes)
 
 **Rationale**: Maintaining consistent code style in JavaScript files improves readability, reduces cognitive load during code reviews, and helps prevent subtle bugs. The `src/` folder contains the core application logic and should adhere to professional coding standards.
+
+## UX and Accessibility Recommendations
+
+### Assistive Technology and Accessibility Improvements
+
+**DO NOT** recommend changes to improve UX for users relying on assistive technologies in this repository.
+
+**Examples of recommendations to avoid**:
+- Adding ARIA attributes (role, aria-live, aria-label, etc.)
+- Adding screen reader-only text (sr-only classes)
+- Keyboard navigation improvements
+- Focus management suggestions
+- Color contrast or visual accessibility enhancements
+- Alternative text for images when not already present
+
+**Rationale**: Accessibility improvements are not a priority for this codebase at this time. While important in general, the team has decided to defer these types of UX enhancements to focus on other development priorities.
